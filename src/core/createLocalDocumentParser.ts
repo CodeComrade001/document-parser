@@ -1,5 +1,5 @@
-import { NodeLlamaCppRuntime, NodeRuntime } from "../adapters/llm/local/NodeLlamaCppRuntime.js";
 import { createLLMProvider } from "../adapters/llm/LLMProviderFactory.js";
+import { NODE_RUNTIME } from "../route/document.routes.js";
 import { incidentReportProfile } from "../shared/config/profiles/incidentReport.profile.js";
 import { DocumentParserConstructor } from "./DocumentParserConstructor.js";
 
@@ -8,7 +8,7 @@ export function createLocalDocumentParser() {
     llmProvider: createLLMProvider({
       provider: "local",
       model: "SmolLM2-1.7B-Instruct-Q2_K",
-      runtime: NodeRuntime,
+      runtime: NODE_RUNTIME,
       timeoutMs: 5 * 60_000,
     }),
     semanticProfile: incidentReportProfile,
@@ -16,7 +16,7 @@ export function createLocalDocumentParser() {
       limits: { maxChunkChars: 3000, minChunkChars: 1000 },
       llm: { maxOutputTokens: 1024, chunkConcurrency: 1 },
     },
-  }).init();
+  });
 
-  return { parser, dispose: () => NodeRuntime.dispose() };
+  return { parser, dispose: () => NODE_RUNTIME.dispose() };
 }

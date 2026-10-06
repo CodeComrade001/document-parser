@@ -103,8 +103,5 @@ export class NodeLlamaCppRuntime implements LocalLLMRuntime {
 }
 
 
-export const NodeRuntime = new NodeLlamaCppRuntime({
-  modelPath: resolveRelativePath("SmolLM2-1.7B-Instruct-Q2_K.gguf"),
-  contextSize: 8192,
-});
+
 
