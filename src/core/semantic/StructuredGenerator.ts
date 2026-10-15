@@ -81,7 +81,7 @@ export class StructuredGenerator {
     private readonly policy: GenerationPolicy,
     private readonly logger: Logger,
     private readonly sleep: Sleep = defaultSleep,
-  ) {}
+  ) { }
 
   public async generate<T>(
     original: LLMRequest,
@@ -94,8 +94,10 @@ export class StructuredGenerator {
     let lastErrors: string[] = [];
     let last: LLMResponse | undefined;
 
-    for (;;) {
+    for (; ;) {
       const response = await this.callWithRetry(request, counters);
+      console.log("Turbo Log  ~ StructuredGenerator ~ generate ~ response:", response);
+
       last = response;
       counters.calls += 1;
       counters.latencyMs += response.latencyMs;
@@ -103,6 +105,8 @@ export class StructuredGenerator {
       counters.output += response.usage?.outputTokens ?? 0;
 
       const json = parseJsonLoosely(response.text);
+      console.log("Turbo Log  ~ StructuredGenerator ~ generate ~ json:", json);
+
       if (json.ok) {
         const validated = schema.safeParse(json.value);
         if (validated.success) {
@@ -129,6 +133,8 @@ export class StructuredGenerator {
     }
 
     const trace = this.buildTrace(operation, promptVersion, last, counters);
+    console.log("Turbo Log  ~ StructuredGenerator ~ generate ~ trace:", trace);
+
     this.logger.error("llm.generate.failed", { ...trace, validation: "invalid" });
     throw new LLMOutputValidationError(
       `LLM output for "${operation}" failed schema validation after ${counters.repairs} repair attempt(s)`,
@@ -142,7 +148,10 @@ export class StructuredGenerator {
   ): Promise<LLMResponse> {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await this.provider.generate(request);
+        const providerGenerator = await this.provider.generate(request);
+        console.log("Turbo Log  ~ StructuredGenerator ~ callWithRetry ~ providerGenerator:", providerGenerator);
+
+        return providerGenerator;
       } catch (error) {
         const providerError =
           error instanceof LLMProviderError

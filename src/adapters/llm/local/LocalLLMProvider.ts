@@ -72,6 +72,7 @@ export class LocalLLMProvider implements LLMProvider {
         }),
         timeout,
       ]);
+      console.log("Turbo Log  ~ LocalLLMProvider ~ generate ~ completion.text:", completion.text);
 
       const usage: LLMUsage = {
         ...(completion.inputTokens === undefined ? {} : { inputTokens: completion.inputTokens }),

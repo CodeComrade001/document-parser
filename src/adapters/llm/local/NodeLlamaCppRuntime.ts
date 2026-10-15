@@ -55,6 +55,56 @@ export class NodeLlamaCppRuntime implements LocalLLMRuntime {
     }
   }
 
+  /**
+  * Loads the local model and verifies that it can generate valid JSON.
+  * Call during application startup before accepting requests.
+  */
+  public async initialize(): Promise<void> {
+    await this.load();
+
+    const result = await this.complete({
+      system: [
+        "You are a strict JSON response generator.",
+        "You MUST follow the user's instruction exactly.",
+        "Do not summarize, paraphrase, simplify, or replace requested values.",
+        'Return exactly this JSON object: {"status":"I am LLM_OK and LLM_WORKING"}.',
+        "The status value must match the requested string character-for-character.",
+        "Do not return any other status value.",
+      ].join(" "),
+      prompt:
+        'Output exactly {"status":"OK ==> LLM_OK & LLM_WORKING"} with no changes.',
+      jsonOutput: true,
+      signal: new AbortController().signal,
+      maxOutputTokens: 200,
+      temperature: 0,
+    });
+    console.log("Turbo Log  ~ NodeLlamaCppRuntime ~ initialize ~ result:", result);
+
+    let response: unknown;
+
+    try {
+      response = JSON.parse(result.text);
+      console.log("Turbo Log  ~ NodeLlamaCppRuntime ~ initialize ~ response:", response);
+    } catch (error) {
+      throw new Error(
+        `Local LLM health check returned invalid JSON: ${result.text}`,
+        { cause: error },
+      );
+    }
+    console.log("Turbo Log  ~ NodeLlamaCppRuntime ~ initialize ~ response:", response);
+
+    if (
+      typeof response !== "object" ||
+      response === null ||
+      !("status" in response) ||
+      response.status !== "OK ==> LLM_OK & LLM_WORKING"
+    ) {
+      throw new Error(
+        `Local LLM health check returned an unexpected response: ${result.text}`,
+      );
+    }
+  }
+
   private async generate(input: LocalLLMCompletionInput): Promise<LocalLLMCompletion> {
     const { LlamaChatSession } = await import("node-llama-cpp");
     const { llama, model } = await this.load();
