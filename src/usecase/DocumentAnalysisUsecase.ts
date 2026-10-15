@@ -1,3 +1,5 @@
+import { DocumentParserResult } from "../core/document/DocumentParserResult";
+import { DocumentParserPayload } from "../core/document/DocumentTypes";
 import { DocumentParserConstructor } from "../core/DocumentParserConstructor"
 
 
@@ -9,21 +11,23 @@ export default class DocumentAnalysisUsecase {
 
   }
 
-  public async execute(payload: any): Promise<{
+  public async execute(payload: DocumentParserPayload[]): Promise<{
     success: boolean,
     message?: string,
-    data: any | null
+    data: DocumentParserResult[] | null
   }> {
     // after business logic execute the 
     const { document } = this.documentParser.init()
 
-    const result = document.parse(payload)
+    const result = await Promise.all(payload.map(async (payload) => {
+      return await document.parse(payload);
+    }));
     console.log("Turbo Log  ~ DocumentAnalysisUsecase ~ execute ~ result:", result);
 
     return {
       success: true,
       message: "No implemtation found",
-      data: []
+      data: result
     }
   }
 }

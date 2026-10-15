@@ -19,6 +19,7 @@ import type { DocumentParserResult } from "./document/DocumentParserResult.js";
 import { DocumentParser } from "./document/DocumentParser.js";
 import type { DocumentParserPayload } from "./document/DocumentTypes.js";
 import { FormatDetector } from "./document/FormatDetector.js";
+import { PdfExtractor } from "../adapters/extractors/pdf/pdfExtractor.js";
 
 export interface DocumentParserExecute {
   parse: (payload: DocumentParserPayload) => Promise<DocumentParserResult>;
@@ -70,7 +71,7 @@ export class DocumentParserConstructor {
 
     // Later entries win, so callers can replace a built-in extractor.
     const byFormat = new Map<string, IDocumentExtractor>();
-    for (const extractor of [new TextExtractor(), new MarkdownExtractor(), ...extractors]) {
+    for (const extractor of [new TextExtractor(), new MarkdownExtractor(), new PdfExtractor(), ...extractors]) {
       byFormat.set(extractor.format, extractor);
     }
 

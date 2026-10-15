@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import type { SemanticProfile } from "../semantic/SemanticProfile.js";
 
 export const DOCUMENT_FORMATS = ["pdf", "docx", "html", "markdown", "text"] as const;
@@ -11,6 +12,7 @@ export interface DocumentParserPayload {
    * Original file name. Used ONLY as a format hint (extension); it is never
    * used to touch the filesystem.
    */
+  readonly file?: Readable;
   readonly fileName?: string;
   readonly mimeType?: string;
   /** Per-call override of the semantic profile configured at bootstrap. Validated before use. */

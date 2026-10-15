@@ -10,12 +10,20 @@ import { DocumentChunker } from "../chunking/DocumentChunker.js";
 import type { ExtractorRegistry } from "../extraction/ExtractorRegistry.js";
 import { DocumentNormalizer } from "../normalization/DocumentNormalizer.js";
 import type { SemanticExtractor } from "../semantic/SemanticExtractor.js";
-import type { SemanticProfile } from "../semantic/SemanticProfile.js";
-import { documentParserResultSchema, type DocumentParserResult } from "./DocumentParserResult.js";
+import {
+  formatZodIssues,
+  type SemanticProfile,
+} from "../semantic/SemanticProfile.js";
+import {
+  documentParserResultSchema,
+  type DocumentParserResult,
+} from "./DocumentParserResult.js";
 import type { FormatDetector } from "./FormatDetector.js";
 import { validatePayload } from "./PayloadValidator.js";
-import type { DocumentParserPayload, DocumentSource } from "./DocumentTypes.js";
-import { formatZodIssues } from "../semantic/SemanticProfile.js";
+import type {
+  DocumentParserPayload,
+  DocumentSource,
+} from "./DocumentTypes.js";
 
 export interface DocumentParserDependencies {
   readonly config: DocumentParserConfig;
@@ -29,62 +37,105 @@ export interface DocumentParserDependencies {
 }
 
 /**
- * The parsing pipeline:
+ * Processes one document per call:
  *
- *   validate -> detect format -> extract (deterministic) -> normalize ->
- *   chunk -> semantic extraction (LLM) -> final schema validation
+ * validate -> detect format -> extract -> normalize -> chunk
+ * -> semantic extraction -> validate output contract.
  *
- * Contains orchestration only; every stage is an injected collaborator.
- * Stateless per call, so it is safe to use concurrently.
+ * All collaborators are injected, and no per-request state is retained.
  */
 export class DocumentParser {
-  public constructor(private readonly deps: DocumentParserDependencies) {}
+  public constructor(
+    private readonly documentParserDeps: DocumentParserDependencies,
+  ) { }
 
-  public async parse(payload: DocumentParserPayload): Promise<DocumentParserResult> {
-    const { config, logger } = this.deps;
+  public async parse(
+    payload: DocumentParserPayload,
+  ): Promise<DocumentParserResult> {
+    const { config, logger } = this.documentParserDeps;
     const startedAt = Date.now();
 
     const input = validatePayload(payload, config.limits);
-    const profile = input.semanticProfile ?? this.deps.defaultProfile;
 
-    const format = this.deps.formatDetector.detect({
+    const profile: SemanticProfile =
+      input.semanticProfile ?? this.documentParserDeps.defaultProfile;
+
+    const format = this.documentParserDeps.formatDetector.detect({
       bytes: input.bytes,
-      ...(input.fileName === undefined ? {} : { fileName: input.fileName }),
-      ...(input.mimeType === undefined ? {} : { mimeType: input.mimeType }),
+      ...(input.fileName === undefined
+        ? {}
+        : { fileName: input.fileName }),
+      ...(input.mimeType === undefined
+        ? {}
+        : { mimeType: input.mimeType }),
     });
-    const extractor = this.deps.extractors.get(format);
 
-    let raw;
+    const extractor = this.documentParserDeps.extractors.get(format);
+
+    let raw: Awaited<ReturnType<typeof extractor.extract>>;
+
     try {
       raw = await extractor.extract({
         bytes: input.bytes,
-        ...(input.fileName === undefined ? {} : { fileName: input.fileName }),
+        ...(input.fileName === undefined
+          ? {}
+          : { fileName: input.fileName }),
+        ...(payload.file === undefined ? {} : { file: payload.file }),
       });
-    } catch (error) {
-      if (error instanceof DocumentParserError) throw error;
-      throw new ExtractionError(`${format} extractor failed`, { cause: error });
+    } catch (error: unknown) {
+      if (error instanceof DocumentParserError) {
+        throw error;
+      }
+
+      throw new ExtractionError(`${format} extractor failed`, {
+        cause: error,
+      });
     }
 
     const source: DocumentSource = {
       format,
       byteLength: input.bytes.byteLength,
-      ...(input.fileName === undefined ? {} : { fileName: input.fileName }),
-      ...(input.mimeType === undefined ? {} : { mimeType: input.mimeType }),
+      ...(input.fileName === undefined
+        ? {}
+        : { fileName: input.fileName }),
+      ...(input.mimeType === undefined
+        ? {}
+        : { mimeType: input.mimeType }),
     };
-    const document = this.deps.normalizer.normalize(raw, source, input.bytes);
-    const blockCount = document.sections.reduce((total, section) => total + section.blocks.length, 0);
+
+    const document = this.documentParserDeps.normalizer.normalize(
+      raw,
+      source,
+      input.bytes,
+    );
+
+    const blockCount = document.sections.reduce(
+      (total, section) => total + section.blocks.length,
+      0,
+    );
+
     if (blockCount === 0) {
-      throw new DocumentContentError("EMPTY_DOCUMENT", "no extractable text was found in the document");
+      throw new DocumentContentError(
+        "EMPTY_DOCUMENT",
+        "no extractable text was found in the document",
+      );
     }
 
-    const chunks = this.deps.chunker.chunk(document);
+    const chunks = this.documentParserDeps.chunker.chunk(document);
+
     if (chunks.length > config.limits.maxChunks) {
       throw new DocumentContentError(
         "DOCUMENT_TOO_LARGE",
         `document needs ${chunks.length} chunks, limit is ${config.limits.maxChunks}`,
-        { details: { chunkCount: chunks.length, maxChunks: config.limits.maxChunks } },
+        {
+          details: {
+            chunkCount: chunks.length,
+            maxChunks: config.limits.maxChunks,
+          },
+        },
       );
     }
+
     logger.info("document.extracted", {
       documentId: document.id,
       format,
@@ -94,25 +145,42 @@ export class DocumentParser {
       chunkCount: chunks.length,
     });
 
-    const semantic = await this.deps.semanticExtractor.extract(document, chunks, profile);
+    const semantic = await this.documentParserDeps.semanticExtractor.extract(
+      document,
+      chunks,
+      profile,
+    );
 
     const candidate = {
       document: semantic.document,
-      semantic_concepts: profile.concepts.map(({ key, description, category, aliases }) => ({
-        key,
-        description,
-        category,
-        aliases: [...aliases],
-      })),
-      relationships: profile.relationships.map(({ key, description }) => ({ key, description })),
+      semantic_concepts: profile.concepts.map(
+        ({ key, description, category, aliases }) => ({
+          key,
+          description,
+          category,
+          aliases: [...aliases],
+        }),
+      ),
+      relationships: profile.relationships.map(
+        ({ key, description }) => ({
+          key,
+          description,
+        }),
+      ),
       entities: semantic.entities,
     };
 
     const validated = documentParserResultSchema.safeParse(candidate);
+
     if (!validated.success) {
-      throw new ResultContractError("assembled result violates the output contract", {
-        details: { errors: formatZodIssues(validated.error) },
-      });
+      throw new ResultContractError(
+        "assembled result violates the output contract",
+        {
+          details: {
+            errors: formatZodIssues(validated.error),
+          },
+        },
+      );
     }
 
     logger.info("document.parsed", {
@@ -120,6 +188,7 @@ export class DocumentParser {
       entityCount: validated.data.entities.length,
       durationMs: Date.now() - startedAt,
     });
+
     return validated.data;
   }
 }

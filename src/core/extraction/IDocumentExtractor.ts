@@ -1,9 +1,11 @@
+import { Readable } from "node:stream";
 import type { DocumentFormat } from "../document/DocumentTypes.js";
 import type { RawDocument } from "./RawDocument.js";
 
 export interface ExtractionInput {
   readonly bytes: Uint8Array;
   readonly fileName?: string;
+  readonly file?: Readable
 }
 
 /**

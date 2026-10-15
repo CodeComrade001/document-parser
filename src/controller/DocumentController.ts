@@ -1,7 +1,9 @@
+
+import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 
-import { FileUploadModel } from "../file_Interface/fileInterface";
 import DocumentAnalysisUsecase from "../usecase/DocumentAnalysisUsecase";
+import { DocumentParserPayload } from "../core/document/DocumentTypes";
 
 type SupportedDocumentType = "pdf" | "docx" | "markdown";
 
@@ -10,12 +12,11 @@ interface DocumentMetadata {
   name: string;
   size: number;
   type: SupportedDocumentType;
-  filepath?: string;
 }
 
 interface DocumentUploadResult {
   success: true;
-  data: FileUploadModel[];
+  data: DocumentParserPayload[];
 }
 
 interface DocumentUploadFailure {
@@ -32,9 +33,7 @@ interface MultipartFilePart {
   fieldname: string;
   filename: string;
   mimetype: string;
-  file: Readable & {
-    bytesRead?: number;
-  };
+  file: Readable;
 }
 
 interface MultipartFieldPart {
@@ -73,24 +72,25 @@ export default class DocumentController {
         });
       }
 
-      const payload = await this.documentAnalysisUsecase.execute(
+      const result = await this.documentAnalysisUsecase.execute(
         uploadResult.data,
       );
 
+      if (!result.success) {
+        return reply.code(422).send(result);
+      }
+
       return reply.code(200).send({
         success: true,
-        // jobId: payload?.jobId ?? "",
-        data: payload,
+        data: result.data,
+        message: result.message,
       });
     } catch (error) {
-      console.error(
-        "Document analysis request failed:",
-        error,
-      );
+      console.error("Document analysis request failed:", error);
 
       return reply.code(500).send({
         success: false,
-        message: "Internal server error",
+        message: "Failed to analyze the uploaded documents.",
       });
     }
   }
@@ -98,125 +98,148 @@ export default class DocumentController {
   private async fileToStream(
     request: MultipartRequest,
   ): Promise<DocumentUploadResponse> {
+    const payloads: DocumentParserPayload[] = [];
+
     try {
-      const files: FileUploadModel[] = [];
-
-      let requestMetadata: Partial<DocumentMetadata> = {};
-
       for await (const part of request.parts()) {
-        if (
-          part.type === "field" &&
-          part.fieldname === "metadata"
-        ) {
-          if (
-            typeof part.value !== "string" ||
-            !part.value.trim()
-          ) {
-            continue;
-          }
-
-          try {
-            requestMetadata = JSON.parse(part.value);
-          } catch {
-            return {
-              success: false,
-              message: "Invalid metadata payload",
-            };
-          }
-
-          continue;
-        }
-
-        if (
-          part.type !== "file" ||
-          part.fieldname !== "files"
-        ) {
+        if (part.type !== "file" || part.fieldname !== "files") {
           continue;
         }
 
         const documentType = this.resolveDocumentType(
           part.filename,
+          part.mimetype,
         );
+
+        const chunks: Buffer[] = [];
+
+        for await (const chunk of part.file) {
+          chunks.push(
+            Buffer.isBuffer(chunk)
+              ? chunk
+              : Buffer.from(chunk),
+          );
+        }
+
+        const buffer = Buffer.concat(chunks);
+
+        if (buffer.length === 0) {
+          return {
+            success: false,
+            message: `The uploaded file is empty: ${part.filename}`,
+          };
+        }
 
         if (!documentType) {
           return {
             success: false,
             message:
-              "Unsupported document type. Supported types are PDF, DOCX, and Markdown.",
+              `Unsupported or invalid document: ${part.filename}. ` +
+              "Supported types are PDF, DOCX, and Markdown.",
           };
         }
 
-        files.push({
-          metadata: {
-            id:
-              typeof requestMetadata.id === "string" &&
-                requestMetadata.id.trim()
-                ? requestMetadata.id
-                : crypto.randomUUID(),
+        if (!this.hasValidSignature(buffer, documentType)) {
+          return {
+            success: false,
+            message:
+              `The file content does not match the declared format: ${part.filename}.`,
+          };
+        }
 
-            name: part.filename,
+        const metadata: DocumentMetadata = {
+          id: randomUUID(),
+          name: part.filename,
+          size: buffer.length,
+          type: documentType,
+        };
 
-            size:
-              typeof part.file.bytesRead === "number"
-                ? part.file.bytesRead
-                : 0,
-
-            type: documentType,
-
-            filepath:
-              typeof requestMetadata.filepath === "string"
-                ? requestMetadata.filepath
-                : undefined,
-          },
-
-          file: part.file,
+        payloads.push({
+          content: buffer,
+          fileName: metadata.name,
+          mimeType: part.mimetype,
+          file: Readable.from([buffer]),
         });
       }
 
-      if (!files.length) {
+      if (payloads.length === 0) {
         return {
           success: false,
-          message: "No documents provided",
+          message: "No documents provided in the 'files' field.",
         };
       }
 
       return {
         success: true,
-        data: files,
+        data: payloads,
       };
     } catch (error) {
-      console.error(
-        "Error while processing document upload:",
-        error,
-      );
+      console.error("Error processing document upload:", error);
 
       return {
         success: false,
-        message: "Failed to process uploaded document",
+        message: "Failed to process uploaded documents.",
       };
     }
   }
 
   private resolveDocumentType(
     filename: string,
+    mimeType: string,
   ): SupportedDocumentType | null {
-    const extension = filename
-      .toLowerCase()
-      .substring(filename.lastIndexOf("."));
+    const extension = filename.toLowerCase().split(".").pop();
 
     switch (extension) {
-      case ".pdf":
+      case "pdf":
         return "pdf";
 
-      case ".docx":
+      case "docx":
         return "docx";
 
-      case ".md":
-      case ".markdown":
+      case "md":
+      case "markdown":
         return "markdown";
 
       default:
-        return null;
+        switch (mimeType.toLowerCase()) {
+          case "application/pdf":
+            return "pdf";
+
+          case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            return "docx";
+
+          case "text/markdown":
+          case "text/x-markdown":
+            return "markdown";
+
+          default:
+            return null;
+        }
+    }
+  }
+
+  private hasValidSignature(
+    buffer: Buffer,
+    type: SupportedDocumentType,
+  ): boolean {
+    switch (type) {
+      case "pdf":
+        return buffer.subarray(0, 5).toString("ascii") === "%PDF-";
+
+      case "docx":
+        return (
+          buffer.length >= 4 &&
+          buffer[0] === 0x50 &&
+          buffer[1] === 0x4b &&
+          (
+            (buffer[2] === 0x03 && buffer[3] === 0x04) ||
+            (buffer[2] === 0x05 && buffer[3] === 0x06) ||
+            (buffer[2] === 0x07 && buffer[3] === 0x08)
+          )
+        );
+
+      case "markdown":
+        return !buffer.includes(0x00);
     }
   }
 }

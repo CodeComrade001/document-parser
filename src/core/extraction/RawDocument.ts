@@ -1,3 +1,5 @@
+import { DocumentFormat } from "../document/DocumentTypes";
+
 /**
  * Output of a deterministic extractor, before normalization.
  * Extractors report what the file physically contains; they do not interpret it.
