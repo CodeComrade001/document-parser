@@ -1,9 +1,9 @@
-
-import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 
 import DocumentAnalysisUsecase from "../usecase/DocumentAnalysisUsecase";
 import { DocumentParserPayload } from "../core/document/DocumentTypes";
+import { SemanticProfile } from "../core/semantic/SemanticProfile";
+import { parseSemanticProfileField } from "../core/semantic/SemanticProfileGuard";
 
 type SupportedDocumentType = "pdf" | "docx" | "markdown";
 
@@ -22,6 +22,8 @@ interface DocumentUploadResult {
 interface DocumentUploadFailure {
   success: false;
   message: string;
+  /** Per-field validation details, present for semantic profile failures. */
+  issues?: readonly string[];
 }
 
 type DocumentUploadResponse =
@@ -40,6 +42,8 @@ interface MultipartFieldPart {
   type: "field";
   fieldname: string;
   value: unknown;
+  /** Set by the multipart plugin when the value exceeded the configured field size limit. */
+  valueTruncated?: boolean;
 }
 
 type MultipartPart = MultipartFilePart | MultipartFieldPart;
@@ -52,6 +56,9 @@ interface FastifyReply {
   code(statusCode: number): FastifyReply;
   send(payload: unknown): unknown;
 }
+
+const SEMANTIC_PROFILE_FIELD = "semanticProfile";
+const FILES_FIELD = "files";
 
 export default class DocumentController {
   constructor(
@@ -69,6 +76,7 @@ export default class DocumentController {
         return reply.code(400).send({
           success: false,
           message: uploadResult.message,
+          ...(uploadResult.issues ? { issues: uploadResult.issues } : {}),
         });
       }
 
@@ -98,29 +106,59 @@ export default class DocumentController {
   private async fileToStream(
     request: MultipartRequest,
   ): Promise<DocumentUploadResponse> {
-    const payloads: DocumentParserPayload[] = [];
+    const uploads: Omit<DocumentParserPayload, "semanticProfile">[] = [];
+
+    // Validated as soon as the field arrives, applied after the loop so
+    // multipart field order does not matter.
+    let semanticProfile: SemanticProfile | undefined;
+    let semanticProfileSeen = false;
 
     try {
       for await (const part of request.parts()) {
-        if (part.type !== "file" || part.fieldname !== "files") {
+        if (part.type === "field") {
+          if (part.fieldname !== SEMANTIC_PROFILE_FIELD) {
+            continue;
+          }
+
+          if (semanticProfileSeen) {
+            return {
+              success: false,
+              message: "Only one semanticProfile field is allowed.",
+            };
+          }
+          semanticProfileSeen = true;
+
+          // The multipart plugin truncates oversized fields instead of failing.
+          if (part.valueTruncated || typeof part.value !== "string") {
+            return {
+              success: false,
+              message: "Invalid semantic profile: the field is too large or not text.",
+            };
+          }
+
+          const result = parseSemanticProfileField(part.value);
+          if (!result.ok) {
+            return {
+              success: false,
+              message: "Invalid semantic profile.",
+              issues: result.issues,
+            };
+          }
+
+          semanticProfile = result.profile;
           continue;
         }
 
-        const documentType = this.resolveDocumentType(
-          part.filename,
-          part.mimetype,
-        );
-
-        const chunks: Buffer[] = [];
-
-        for await (const chunk of part.file) {
-          chunks.push(
-            Buffer.isBuffer(chunk)
-              ? chunk
-              : Buffer.from(chunk),
-          );
+        if (part.fieldname !== FILES_FIELD) {
+          continue;
         }
 
+        const documentType = this.resolveDocumentType(part.filename, part.mimetype);
+
+        const chunks: Buffer[] = [];
+        for await (const chunk of part.file) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
         const buffer = Buffer.concat(chunks);
 
         if (buffer.length === 0) {
@@ -133,46 +171,38 @@ export default class DocumentController {
         if (!documentType) {
           return {
             success: false,
-            message:
-              `Unsupported or invalid document: ${part.filename}. ` +
-              "Supported types are PDF, DOCX, and Markdown.",
+            message: `Unsupported document: ${part.filename}.`,
           };
         }
 
         if (!this.hasValidSignature(buffer, documentType)) {
           return {
             success: false,
-            message:
-              `The file content does not match the declared format: ${part.filename}.`,
+            message: `File content does not match its declared format: ${part.filename}.`,
           };
         }
 
-        const metadata: DocumentMetadata = {
-          id: randomUUID(),
-          name: part.filename,
-          size: buffer.length,
-          type: documentType,
-        };
-
-        payloads.push({
+        uploads.push({
           content: buffer,
-          fileName: metadata.name,
+          fileName: part.filename,
           mimeType: part.mimetype,
           file: Readable.from([buffer]),
         });
       }
 
-      if (payloads.length === 0) {
+      if (uploads.length === 0) {
         return {
           success: false,
           message: "No documents provided in the 'files' field.",
         };
       }
 
-      return {
-        success: true,
-        data: payloads,
-      };
+      const payloads: DocumentParserPayload[] = uploads.map((upload) => ({
+        ...upload,
+        semanticProfile,
+      }));
+
+      return { success: true, data: payloads };
     } catch (error) {
       console.error("Error processing document upload:", error);
 

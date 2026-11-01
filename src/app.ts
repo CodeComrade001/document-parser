@@ -5,7 +5,28 @@ import { DocumentRoute } from "./route/document.routes";
 
 
 export async function createApp() {
-  const app = fastify({ logger: true });
+  const app = fastify({
+    logger: {
+      level: process.env.NODE_ENV === "production" ? "info" : "debug",
+      redact: [
+        "req.headers.authorization",
+        "req.headers.cookie",
+        "res.headers.set-cookie",
+      ],
+      transport: {
+        target: 'pino-pretty',
+        options: {
+          colorize: true,
+          translateTime: 'SYS:standard',
+          ignore: 'pid,hostname',
+          singleLine: false,
+          errorLikeObjectKeys: ['err', 'error'],
+        },
+      },
+    },
+    bodyLimit: 1_048_576,
+    trustProxy: false,
+  });
 
   // ---------- CROSS ORIGIN ----------
   await app.register(cors, {

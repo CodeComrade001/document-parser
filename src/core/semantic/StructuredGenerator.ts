@@ -109,8 +109,10 @@ export class StructuredGenerator {
 
       if (json.ok) {
         const validated = schema.safeParse(json.value);
+        console.log("Turbo Log  ~ StructuredGenerator ~ generate ~ validated:", validated);
         if (validated.success) {
           const trace = this.buildTrace(operation, promptVersion, response, counters);
+          console.log("Turbo Log  ~ StructuredGenerator ~ generate ~ trace:", trace);
           this.logger.info("llm.generate.completed", { ...trace, validation: "valid" });
           return { value: validated.data, trace };
         }
@@ -179,6 +181,12 @@ export class StructuredGenerator {
     response: LLMResponse | undefined,
     counters: { calls: number; repairs: number; transportRetries: number; latencyMs: number; input: number; output: number },
   ): GenerationTrace {
+    console.log("Turbo Log  ~ StructuredGenerator ~ buildTrace ~ counters:", counters);
+    console.log("Turbo Log  ~ StructuredGenerator ~ buildTrace ~ response:", response);
+    console.log("Turbo Log  ~ StructuredGenerator ~ buildTrace ~ promptVersion:", promptVersion);
+    console.log("Turbo Log  ~ StructuredGenerator ~ buildTrace ~ operation:", operation);
+
+
     return {
       operation,
       promptVersion,

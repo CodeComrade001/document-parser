@@ -108,7 +108,7 @@ export class SemanticExtractor {
     private readonly prompts: SemanticPromptBuilder,
     private readonly config: SemanticExtractorConfig,
     private readonly logger: Logger,
-  ) {}
+  ) { }
 
   public async extract(
     document: ParsedDocument,
@@ -124,6 +124,7 @@ export class SemanticExtractor {
       const schema = buildChunkSchema(conceptKeys, blockIds, this.config.maxEntityValueChars);
       const request = this.prompts.buildExtraction({ chunk, classification, profile });
       const { value } = await this.generator.generate(request, schema);
+      console.log("Turbo Log  ~ SemanticExtractor ~ extract ~ value:", value);
 
       const candidates: CandidateEntity[] = value.entities.map((entity) => ({
         concept: entity.concept,
